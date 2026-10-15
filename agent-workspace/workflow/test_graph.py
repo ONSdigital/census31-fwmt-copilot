@@ -105,6 +105,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(evidence.inspections, 1)
         self.assertEqual(len(calls), 1)
 
+    def test_restart_after_publication_error_uses_checkpointed_repair(self):
+        evidence, repair = FakeEvidence(), FakeRepair()
+
+        def uncertain(*args):
+            raise RuntimeError("push outcome uncertain")
+
+        repair.publish = uncertain
+        with BuildFailureWorkflow(self.checkpoints, evidence, repair) as workflow:
+            with self.assertRaisesRegex(RuntimeError, "push outcome uncertain"):
+                workflow.run(9, "triage-pr-build-failure", "github", self.payload)
+        repair.publish = lambda *args: {"status": "reported", "reason": "push outcome uncertain"}
+        with BuildFailureWorkflow(self.checkpoints, evidence, repair) as workflow:
+            report = workflow.run(9, "triage-pr-build-failure", "github", self.payload)
+        self.assertEqual(report["status"], "reported")
+        self.assertEqual(evidence.inspections, 1)
+        self.assertEqual(repair.repaired, [9])
+        self.assertEqual(repair.pushed, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 # FWMT agent integration: failed PR checks
 
-Polls failed `pull_request` GitHub Actions runs and failed Google Cloud Build check runs on open PR heads for the repositories in the root `workspace.json`. For each associated PR, it checks the PR author against configured `--author` logins (case-insensitive). Completed, failed Cloud Build checks are sent to the agent API as structured events; the agent workspace owns validation and prompt rendering. GitHub Actions failures continue to be logged as JSON. The poller does not wait for other checks or queued check suites and does not download build logs. A separate SQLite file records seen Actions runs and Cloud Build check IDs only after successful output or delivery, preventing repeated requests across restarts. The agent API idempotency key also protects against ambiguous HTTP retries.
+Polls failed `pull_request` GitHub Actions runs and failed Google Cloud Build check runs on open PR heads for the repositories in the root `workspace.json`. For each associated PR, it checks the PR author against configured `--author` logins (case-insensitive). Completed, failed Cloud Build checks are sent to the agent API as structured events including the observed `headSha`; the agent workspace persists them for a resumable LangGraph workflow. GitHub Actions failures continue to be logged as JSON, not auto-repaired. The poller does not wait for other checks or queued check suites and does not download build logs. A separate SQLite file records seen Actions runs and Cloud Build check IDs only after successful output or delivery, preventing repeated requests across restarts. The agent API idempotency key also protects against ambiguous HTTP retries.
 
 ## Requirements
 
@@ -39,6 +39,8 @@ PYTHONPATH="$PWD" "$HOME/.conda/envs/fwmt-poller/bin/python" fwmt-agent-integrat
   --workspace-config workspace.json \
   --state-db fwmt-agent-integration/state/seen.sqlite3 \
   --token-file "$HOME/.config/fwmt/github-token" \
+  --agent-api-url http://127.0.0.1:8000/agent-requests \
+  --agent-token-file "$HOME/.config/fwmt/agent-api-token" \
   --author YOUR_GITHUB_LOGIN --once
 ```
 
