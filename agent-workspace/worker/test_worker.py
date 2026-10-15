@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "task-queue"))
 from task_queue import TaskQueue
 
 from worker import TaskWorker, main
+from worker import EventWorker
 
 
 class TaskWorkerTests(unittest.TestCase):
@@ -123,6 +124,27 @@ class TaskWorkerTests(unittest.TestCase):
             with redirect_stderr(io.StringIO()) as output:
                 self.assertEqual(main(), 1)
         self.assertIn("Task worker error", output.getvalue())
+
+    def test_event_worker_dispatches_event_and_leaves_legacy_prompts_unexecuted(self):
+        from unittest.mock import Mock
+        self.queue.enqueue("Old prompt")
+        event_id = self.queue.enqueue_event("triage-pr-build-failure", "github",
+                                            {"source": "github-actions"}, "event:1")[0]
+        workflow = Mock()
+        workflow.run.return_value = {"status": "unsupported", "reason": "CI provider not supported"}
+        EventWorker(self.queue, workflow).run(until_empty=True)
+        self.assertEqual(workflow.run.call_args.args[:3], (event_id, "triage-pr-build-failure", "github"))
+        self.assertEqual(self.queue.get_event(event_id)["status"], "unsupported")
+        self.assertEqual(self.queue.list_tasks()[0]["status"], "pending")
+
+    def test_event_worker_failure_does_not_claim_success_or_replay(self):
+        from unittest.mock import Mock
+        event_id = self.queue.enqueue_event("triage-pr-build-failure", "github", {"source": "other"}, "event:2")[0]
+        workflow = Mock()
+        workflow.run.side_effect = RuntimeError("build log unavailable")
+        EventWorker(self.queue, workflow).run(until_empty=True)
+        self.assertEqual(self.queue.get_event(event_id)["status"], "failed")
+        self.assertEqual(self.queue.get_event(event_id)["report"]["reason"], "build log unavailable")
 
 
 if __name__ == "__main__":
