@@ -18,7 +18,9 @@ class FakeEvidence:
                 "head_repo": payload["repository"], "head_ref": "feature", "head_sha": payload["headSha"],
                 "build_id": "build-1", "other_failures": [] if self.eligible else ["tests"]}
 
-    def recheck(self, payload):
+    def recheck(self, payload, evidence):
+        if evidence["head_sha"] != payload["headSha"]:
+            raise ValueError("Unmatched checkpoint")
         return {"headSha": payload["headSha"], "headRef": "feature",
                 "complete": self.safe, "otherFailures": []}
 
