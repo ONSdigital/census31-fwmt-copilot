@@ -57,6 +57,36 @@ class TaskWorker:
                 signal.signal(number, handler)
 
 
+class EventWorker:
+    """Dispatch only structured events; legacy prompt tasks remain untouched."""
+
+    def __init__(self, queue, workflow, poll_interval=2.0):
+        if poll_interval <= 0:
+            raise ValueError("poll interval must be positive")
+        self.queue = queue
+        self.workflow = workflow
+        self.poll_interval = poll_interval
+        self.stopping = Event()
+
+    def run(self, until_empty=False):
+        while not self.stopping.is_set():
+            task = self.queue.claim_event()
+            if task is None:
+                if until_empty:
+                    return
+                self.stopping.wait(self.poll_interval)
+                continue
+            try:
+                report = self.workflow.run(
+                    task["id"], task["command"], task["event_type"], task["payload"]
+                )
+            except (OSError, ValueError, RuntimeError) as error:
+                print("Workflow failed: {}".format(error), file=sys.stderr)
+                self.queue.finish_event(task["id"], "failed", {"reason": str(error)})
+            else:
+                self.queue.finish_event(task["id"], report["status"], report)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queue-db", type=Path, required=True)
@@ -64,9 +94,23 @@ def main():
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument("--until-empty", action="store_true", help="process pending tasks and exit")
+    parser.add_argument("--events", action="store_true", help="process structured events instead of legacy prompts")
+    parser.add_argument("--checkpoints", type=Path, help="persistent LangGraph SQLite checkpoint file")
+    parser.add_argument("--worktree-root", type=Path, help="dedicated writable worktree directory")
     args = parser.parse_args()
     try:
-        TaskWorker(TaskQueue(args.queue_db), args.runner, args.workspace, args.poll_interval).run(args.until_empty)
+        if args.events:
+            if not args.checkpoints or not args.worktree_root:
+                raise ValueError("--events requires --checkpoints and --worktree-root")
+            from workflow.evidence import EvidenceClient
+            from workflow.graph import BuildFailureWorkflow
+            from workflow.repair import RepairAdapter
+            evidence = EvidenceClient()
+            repair = RepairAdapter(args.workspace, args.worktree_root, args.runner)
+            with BuildFailureWorkflow(args.checkpoints, evidence, repair) as workflow:
+                EventWorker(TaskQueue(args.queue_db), workflow, args.poll_interval).run(args.until_empty)
+        else:
+            TaskWorker(TaskQueue(args.queue_db), args.runner, args.workspace, args.poll_interval).run(args.until_empty)
     except (OSError, ValueError) as error:
         print("Task worker error: {}".format(error), file=sys.stderr)
         return 1

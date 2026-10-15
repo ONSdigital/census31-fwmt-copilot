@@ -3,6 +3,7 @@ FROM dev-workspace:base
 COPY --from=ghcr.io/jdx/mise:2026.10.4 /usr/local/bin/mise /usr/local/bin/mise
 COPY agent-workspace/task-queue/task_queue.py /app/task-queue/task_queue.py
 COPY agent-workspace/worker/worker.py /app/worker/worker.py
+COPY agent-workspace/workflow/ /app/workflow/
 COPY agent-workspace/api/app.py /app/api/app.py
 COPY agent-workspace/api/command_processor.py /app/api/command_processor.py
 COPY agent-workspace/api/requirements.txt /app/api/requirements.txt

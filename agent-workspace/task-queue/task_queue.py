@@ -227,6 +227,16 @@ class TaskQueue:
                 )
                 return cursor.rowcount
 
+    def retry_event(self, event_id):
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE workflow_events SET status = 'pending', report = NULL "
+                    "WHERE id = ? AND status = 'failed'", (event_id,),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Event is not failed")
+
     def get_event(self, event_id):
         with closing(self._connect()) as connection:
             return self._event(connection.execute(
@@ -248,6 +258,9 @@ def main():
     commands.add_parser("recover", help="mark an interrupted running task as failed")
     commands.add_parser("list", help="list tasks as JSON")
     commands.add_parser("list-events", help="list structured workflow events and reports")
+    commands.add_parser("recover-events", help="mark interrupted events failed for operator review")
+    retry_event = commands.add_parser("retry-event", help="retry a reviewed failed event")
+    retry_event.add_argument("event_id", type=int)
     enqueue = commands.add_parser("enqueue", help="append a task prompt")
     enqueue.add_argument("prompt")
     enqueue.add_argument("--idempotency-key")
@@ -279,6 +292,10 @@ def main():
             print(json.dumps(queue.list_tasks()))
         elif args.command == "list-events":
             print(json.dumps(queue.list_events()))
+        elif args.command == "recover-events":
+            print(queue.recover_event())
+        elif args.command == "retry-event":
+            queue.retry_event(args.event_id)
     except (OSError, ValueError, sqlite3.Error) as error:
         print("Task queue error: {}".format(error), file=sys.stderr)
         return 1
