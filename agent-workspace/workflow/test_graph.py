@@ -19,7 +19,8 @@ class FakeEvidence:
                 "build_id": "build-1", "other_failures": [] if self.eligible else ["tests"]}
 
     def recheck(self, payload):
-        return self.safe
+        return {"headSha": payload["headSha"], "headRef": "feature",
+                "complete": self.safe, "otherFailures": []}
 
 
 class FakeRepair:
@@ -32,7 +33,7 @@ class FakeRepair:
         return {"commit": "b" * 40, "worktree": "/tmp/test-worktree", "validated": True}
 
     def publish(self, task_id, payload, evidence, result, recheck):
-        if not recheck(payload):
+        if recheck()["complete"] is not True:
             return {"status": "reported", "reason": "PR head or checks changed"}
         self.pushed.append(task_id)
         return {"status": "pushed-awaiting-ci", "commit": result["commit"]}
@@ -81,6 +82,26 @@ class WorkflowTests(unittest.TestCase):
             report = workflow.run(7, "triage-pr-build-failure", "github", self.payload)
         self.assertEqual(report["status"], "reported")
         self.assertEqual(repair.pushed, [])
+
+    def test_restart_after_repair_error_uses_checkpointed_evidence(self):
+        evidence, repair = FakeEvidence(), FakeRepair()
+        original = repair.reproduce_and_fix
+        calls = []
+
+        def interrupted(*args):
+            calls.append(1)
+            raise RuntimeError("tool unavailable")
+
+        repair.reproduce_and_fix = interrupted
+        with BuildFailureWorkflow(self.checkpoints, evidence, repair) as workflow:
+            with self.assertRaises(RuntimeError):
+                workflow.run(8, "triage-pr-build-failure", "github", self.payload)
+        repair.reproduce_and_fix = original
+        with BuildFailureWorkflow(self.checkpoints, evidence, repair) as workflow:
+            report = workflow.run(8, "triage-pr-build-failure", "github", self.payload)
+        self.assertEqual(report["status"], "pushed-awaiting-ci")
+        self.assertEqual(evidence.inspections, 1)
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":
