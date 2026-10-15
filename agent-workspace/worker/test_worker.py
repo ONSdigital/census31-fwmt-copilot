@@ -158,6 +158,16 @@ class TaskWorkerTests(unittest.TestCase):
             worker.run()
         self.assertTrue(worker.stopping.is_set())
 
+    def test_event_mode_does_not_require_legacy_copilot_runner(self):
+        from unittest.mock import MagicMock
+        arguments = ["worker.py", "--events", "--queue-db", str(self.queue.database),
+                     "--workspace", str(self.workspace), "--checkpoints", str(self.root / "checkpoints.db"),
+                     "--worktree-root", str(self.root / "worktrees"), "--until-empty"]
+        with patch.dict(os.environ, {}, clear=True), patch.object(sys, "argv", arguments), \
+                patch("workflow.evidence.EvidenceClient"), patch("workflow.repair.RepairAdapter"), \
+                patch("workflow.graph.BuildFailureWorkflow", return_value=MagicMock()):
+            self.assertEqual(main(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
