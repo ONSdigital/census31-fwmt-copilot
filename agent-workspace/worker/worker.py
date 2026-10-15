@@ -68,23 +68,33 @@ class EventWorker:
         self.poll_interval = poll_interval
         self.stopping = Event()
 
+    def _stop(self, signal_number, frame):
+        self.stopping.set()
+
     def run(self, until_empty=False):
-        while not self.stopping.is_set():
-            task = self.queue.claim_event()
-            if task is None:
-                if until_empty:
-                    return
-                self.stopping.wait(self.poll_interval)
-                continue
-            try:
-                report = self.workflow.run(
-                    task["id"], task["command"], task["event_type"], task["payload"]
-                )
-            except (OSError, ValueError, RuntimeError) as error:
-                print("Workflow failed: {}".format(error), file=sys.stderr)
-                self.queue.finish_event(task["id"], "failed", {"reason": str(error)})
-            else:
-                self.queue.finish_event(task["id"], report["status"], report)
+        previous_handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+        for number in previous_handlers:
+            signal.signal(number, self._stop)
+        try:
+            while not self.stopping.is_set():
+                task = self.queue.claim_event()
+                if task is None:
+                    if until_empty:
+                        return
+                    self.stopping.wait(self.poll_interval)
+                    continue
+                try:
+                    report = self.workflow.run(
+                        task["id"], task["command"], task["event_type"], task["payload"]
+                    )
+                except (OSError, ValueError, RuntimeError) as error:
+                    print("Workflow failed: {}".format(error), file=sys.stderr)
+                    self.queue.finish_event(task["id"], "failed", {"reason": str(error)})
+                else:
+                    self.queue.finish_event(task["id"], report["status"], report)
+        finally:
+            for number, handler in previous_handlers.items():
+                signal.signal(number, handler)
 
 
 def main():
