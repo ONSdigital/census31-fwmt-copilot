@@ -180,6 +180,8 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(TaskQueue(self.database).recover_event(), 1)
         self.assertEqual(TaskQueue(self.database).get_event(event_id)["status"], "failed")
         self.assertEqual(self.queue.list_tasks()[0]["prompt"], "Existing prompt")
+        TaskQueue(self.database).retry_event(event_id)
+        self.assertEqual(TaskQueue(self.database).claim_event()["attempts"], 2)
 
 
 if __name__ == "__main__":
