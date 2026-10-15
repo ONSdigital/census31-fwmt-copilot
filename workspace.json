@@ -1,0 +1,77 @@
+{
+	"workspace_root": ".",
+	"meta-data": {
+		"project-name": "census31-fwmt"
+	},
+	"documents": {
+		"url": "https://github.com/ONSdigital/census31-fwmt-docs.git",
+		"ref": "main"
+	},
+	"repos": [
+		{
+			"name": "census31-fwmt-common",
+			"url": "https://github.com/ONSdigital/census31-fwmt-common.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-acceptance-tests",
+			"url": "https://github.com/ONSdigital/census31-fwmt-acceptance-tests.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-csv-service",
+			"url": "https://github.com/ONSdigital/census31-fwmt-csv-service.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-fulfillment-event-service",
+			"url": "https://github.com/ONSdigital/census31-fwmt-fulfillment-event-service.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-job-service",
+			"url": "https://github.com/ONSdigital/census31-fwmt-job-service.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-outcome-service",
+			"url": "https://github.com/ONSdigital/census31-fwmt-outcome-service.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-perf-msg-builder",
+			"url": "https://github.com/ONSdigital/census31-fwmt-perf-msg-builder.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-performance-tests",
+			"url": "https://github.com/ONSdigital/census31-fwmt-performance-tests.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-tm-mock",
+			"url": "https://github.com/ONSdigital/census31-fwmt-tm-mock.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-ci-terraform",
+			"url": "https://github.com/ONSdigital/census31-fwmt-ci-terraform.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-gateway-version-tracker",
+			"url": "https://github.com/ONSdigital/census31-fwmt-gateway-version-tracker.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-terraform",
+			"url": "https://github.com/ONSdigital/census31-fwmt-terraform.git",
+			"ref": "main"
+		},
+		{
+			"name": "census31-fwmt-tools",
+			"url": "https://github.com/ONSdigital/census31-fwmt-tools.git",
+			"ref": "main"
+		}
+	]
+}
