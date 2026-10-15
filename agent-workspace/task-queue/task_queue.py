@@ -24,6 +24,20 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS tasks_next ON tasks(status, id);
 CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_running ON tasks(status) WHERE status = 'running';
+CREATE TABLE IF NOT EXISTS workflow_events (
+    id INTEGER PRIMARY KEY,
+    command TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'reported', 'unsupported', 'failed', 'pushed-awaiting-ci')),
+    report TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_one_running
+    ON workflow_events(status) WHERE status = 'running';
 """
 
 
@@ -137,6 +151,94 @@ class TaskQueue:
         with closing(self._connect()) as connection:
             return [dict(task) for task in connection.execute("SELECT * FROM tasks ORDER BY id")]
 
+    @staticmethod
+    def _event(row):
+        if row is None:
+            return None
+        event = dict(row)
+        event["payload"] = json.loads(event["payload"])
+        event["report"] = json.loads(event["report"]) if event["report"] else None
+        return event
+
+    def enqueue_event(self, command, event_type, payload, idempotency_key):
+        if (not isinstance(command, str) or not command.strip()
+                or not isinstance(event_type, str) or not event_type.strip()
+                or not isinstance(payload, dict) or not isinstance(idempotency_key, str)
+                or not idempotency_key.strip() or len(idempotency_key) > 255):
+            raise ValueError("Invalid workflow event")
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT * FROM workflow_events WHERE idempotency_key = ?", (idempotency_key,)
+                ).fetchone()
+                if existing is not None:
+                    if (existing["command"], existing["event_type"], existing["payload"]) != (
+                            command, event_type, serialized):
+                        raise IdempotencyConflict("Idempotency key already used for another event")
+                    return existing["id"], False, existing["status"]
+                cursor = connection.execute(
+                    "INSERT INTO workflow_events (command, event_type, payload, idempotency_key) "
+                    "VALUES (?, ?, ?, ?)", (command, event_type, serialized, idempotency_key),
+                )
+                return cursor.lastrowid, True, "pending"
+
+    def claim_event(self):
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if connection.execute(
+                    "SELECT 1 FROM workflow_events WHERE status = 'running' LIMIT 1"
+                ).fetchone():
+                    raise ValueError("an event is already running; recover after confirming the worker stopped")
+                row = connection.execute(
+                    "SELECT * FROM workflow_events WHERE status = 'pending' ORDER BY id LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    return None
+                connection.execute(
+                    "UPDATE workflow_events SET status = 'running', attempts = attempts + 1 WHERE id = ?",
+                    (row["id"],),
+                )
+                return self._event(connection.execute(
+                    "SELECT * FROM workflow_events WHERE id = ?", (row["id"],)
+                ).fetchone())
+
+    def finish_event(self, event_id, status, report):
+        if status not in ("reported", "unsupported", "failed", "pushed-awaiting-ci") or not isinstance(report, dict):
+            raise ValueError("Invalid event result")
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE workflow_events SET status = ?, report = ? WHERE id = ? AND status = 'running'",
+                    (status, json.dumps(report, sort_keys=True), event_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Event is not running")
+
+    def recover_event(self):
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE workflow_events SET status = 'failed', "
+                    "report = ? WHERE status = 'running'",
+                    (json.dumps({"reason": "Worker interrupted; inspect checkpoints and remote before retry"}),),
+                )
+                return cursor.rowcount
+
+    def get_event(self, event_id):
+        with closing(self._connect()) as connection:
+            return self._event(connection.execute(
+                "SELECT * FROM workflow_events WHERE id = ?", (event_id,)
+            ).fetchone())
+
+    def list_events(self):
+        with closing(self._connect()) as connection:
+            return [self._event(row) for row in connection.execute(
+                "SELECT * FROM workflow_events ORDER BY id"
+            )]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -145,6 +247,7 @@ def main():
     commands.add_parser("claim", help="claim the oldest pending task")
     commands.add_parser("recover", help="mark an interrupted running task as failed")
     commands.add_parser("list", help="list tasks as JSON")
+    commands.add_parser("list-events", help="list structured workflow events and reports")
     enqueue = commands.add_parser("enqueue", help="append a task prompt")
     enqueue.add_argument("prompt")
     enqueue.add_argument("--idempotency-key")
@@ -174,6 +277,8 @@ def main():
             print(queue.recover())
         elif args.command == "list":
             print(json.dumps(queue.list_tasks()))
+        elif args.command == "list-events":
+            print(json.dumps(queue.list_events()))
     except (OSError, ValueError, sqlite3.Error) as error:
         print("Task queue error: {}".format(error), file=sys.stderr)
         return 1
