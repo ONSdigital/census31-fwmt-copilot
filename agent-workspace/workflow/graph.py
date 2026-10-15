@@ -69,7 +69,7 @@ class BuildFailureWorkflow:
     def _publish(self, state):
         report = self.repair.publish(
             state["task_id"], state["payload"], state["evidence"], state["repair"],
-            lambda: self.evidence.recheck(state["payload"])
+            lambda: self.evidence.recheck(state["payload"], state["evidence"])
         )
         return {"report": report}
 
