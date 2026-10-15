@@ -155,6 +155,32 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(run("enqueue", "Different PR", "--idempotency-key", key)[0], 1)
         self.assertIn("Task queue error", run("enqueue", "  ")[2])
 
+    def test_event_persists_payload_deduplicates_and_reports_terminal_result(self):
+        payload = {"repository": "ONSdigital/common", "prNumber": 14, "headSha": "a" * 40}
+        first = self.queue.enqueue_event("triage-pr-build-failure", "github", payload, "github:check:101")
+        self.assertEqual(first[1:], (True, "pending"))
+        self.assertEqual(TaskQueue(self.database).enqueue_event(
+            "triage-pr-build-failure", "github", dict(reversed(list(payload.items()))), "github:check:101"
+        ), (first[0], False, "pending"))
+        with self.assertRaises(IdempotencyConflict):
+            self.queue.enqueue_event("triage-pr-build-failure", "github", {"changed": True}, "github:check:101")
+        task = TaskQueue(self.database).claim_event()
+        self.assertEqual(task["payload"], payload)
+        self.assertEqual(task["command"], "triage-pr-build-failure")
+        TaskQueue(self.database).finish_event(first[0], "reported", {"reason": "other checks failed"})
+        self.assertEqual(TaskQueue(self.database).get_event(first[0])["report"]["reason"], "other checks failed")
+        self.assertIsNone(self.queue.claim_event())
+
+    def test_events_do_not_run_legacy_prompts_and_interrupted_events_require_review(self):
+        self.queue.enqueue("Existing prompt")
+        event_id = self.queue.enqueue_event("triage-pr-build-failure", "github", {"source": "other"}, "key")[0]
+        self.assertEqual(self.queue.claim_event()["id"], event_id)
+        with self.assertRaises(ValueError):
+            TaskQueue(self.database).claim_event()
+        self.assertEqual(TaskQueue(self.database).recover_event(), 1)
+        self.assertEqual(TaskQueue(self.database).get_event(event_id)["status"], "failed")
+        self.assertEqual(self.queue.list_tasks()[0]["prompt"], "Existing prompt")
+
 
 if __name__ == "__main__":
     unittest.main()
