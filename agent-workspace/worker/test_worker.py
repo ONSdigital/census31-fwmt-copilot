@@ -146,6 +146,18 @@ class TaskWorkerTests(unittest.TestCase):
         self.assertEqual(self.queue.get_event(event_id)["status"], "failed")
         self.assertEqual(self.queue.get_event(event_id)["report"]["reason"], "build log unavailable")
 
+    def test_event_worker_stops_without_claiming_new_event(self):
+        from unittest.mock import Mock
+        worker = EventWorker(self.queue, Mock())
+
+        def stop_during_wait(interval):
+            self.assertEqual(interval, 2.0)
+            worker._stop(None, None)
+
+        with patch.object(worker.stopping, "wait", side_effect=stop_during_wait):
+            worker.run()
+        self.assertTrue(worker.stopping.is_set())
+
 
 if __name__ == "__main__":
     unittest.main()
