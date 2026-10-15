@@ -100,7 +100,7 @@ class EventWorker:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queue-db", type=Path, required=True)
-    parser.add_argument("--runner", default=os.environ.get("AGENT_RUNNER"), required="AGENT_RUNNER" not in os.environ)
+    parser.add_argument("--runner", default=os.environ.get("AGENT_RUNNER"))
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument("--until-empty", action="store_true", help="process pending tasks and exit")
@@ -120,6 +120,8 @@ def main():
             with BuildFailureWorkflow(args.checkpoints, evidence, repair) as workflow:
                 EventWorker(TaskQueue(args.queue_db), workflow, args.poll_interval).run(args.until_empty)
         else:
+            if not args.runner:
+                raise ValueError("legacy prompt worker requires --runner or AGENT_RUNNER")
             TaskWorker(TaskQueue(args.queue_db), args.runner, args.workspace, args.poll_interval).run(args.until_empty)
     except (OSError, ValueError) as error:
         print("Task worker error: {}".format(error), file=sys.stderr)
