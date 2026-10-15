@@ -7,7 +7,7 @@ The workspace bootstrap script copies `workspace.json` into a new directory and 
 From the project root (the directory containing `workspace.json`):
 
 ```sh
-python3 dev-workspace/scripts/create_workspace.py --workspace /path/to/new-workspace --config workspace.json
+PYTHONPATH="$PWD" python3 dev-workspace/scripts/create_workspace.py --workspace /path/to/new-workspace --config workspace.json
 ```
 
 For private GitHub repositories, your existing Git credential helper can authenticate. Alternatively, [create a fine-grained personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token), put it in a readable file outside the repository, restrict its permissions to the intended user, and run:
@@ -16,7 +16,7 @@ For private GitHub repositories, your existing Git credential helper can authent
 export GITHUB_TOKEN_FILE=/path/to/github-token-file
 export GIT_ASKPASS="$PWD/dev-workspace/scripts/git_askpass.py"
 export GIT_TERMINAL_PROMPT=0
-python3 dev-workspace/scripts/create_workspace.py --workspace /path/to/new-workspace --config workspace.json
+PYTHONPATH="$PWD" python3 dev-workspace/scripts/create_workspace.py --workspace /path/to/new-workspace --config workspace.json
 ```
 
 The askpass helper only answers GitHub HTTPS prompts. Keep these variables set for later `git push` commands, or use your normal local Git credential helper. A configured credential helper may take precedence over askpass.

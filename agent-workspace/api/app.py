@@ -9,20 +9,25 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from command_processor import render_command
 from task_queue import IdempotencyConflict, TaskQueue
 
 
 class AgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    prompt: str = Field(min_length=1, max_length=4096)
-    idempotencyKey: str | None = Field(default=None, min_length=1, max_length=255)
+    command: str = Field(min_length=1, max_length=100)
+    type: str = Field(min_length=1, max_length=100)
+    payload: dict
+    idempotencyKey: str = Field(min_length=1, max_length=255)
 
-    @field_validator("prompt", "idempotencyKey", mode="before")
+    @field_validator("idempotencyKey")
     @classmethod
-    def strip_text(cls, value):
-        return value.strip() if isinstance(value, str) else value
+    def nonblank_key(cls, value):
+        if not value.strip():
+            raise ValueError("Idempotency key must not be blank")
+        return value
 
 
 @asynccontextmanager
@@ -59,10 +64,23 @@ def create_app():
     application = FastAPI(lifespan=lifespan)
 
     @application.post("/agent-requests", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_api_token)])
-    def add_agent_request(agent_request: AgentRequest, request: Request, response: Response):
+    async def add_agent_request(request: Request, response: Response):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 65536:
+                raise HTTPException(status_code=413, detail="Request body too large")
+        try:
+            agent_request = AgentRequest.model_validate_json(body)
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail="Invalid agent request") from error
+        try:
+            prompt = render_command(agent_request.command, agent_request.type, agent_request.payload)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         try:
             message_id, created, task_status = request.app.state.queue.enqueue_once(
-                agent_request.prompt, agent_request.idempotencyKey
+                prompt, agent_request.idempotencyKey
             )
         except IdempotencyConflict as error:
             raise HTTPException(status_code=409, detail="Idempotency key already used for another prompt") from error

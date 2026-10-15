@@ -72,3 +72,15 @@
 1. Added optional `idempotencyKey` support to the shared API and SQLite queue for webhook retries, with atomic keyed inserts and an in-place migration for existing databases.
 2. Replays of the same prompt/key reuse the message ID with HTTP 200 and current status; conflicting prompt reuse returns HTTP 409. Unkeyed requests retain their create-new behavior.
 3. Documented stable namespaced keys for provider events and covered replay, conflict, concurrent submissions, CLI use, and legacy database migration in local tests.
+
+## 2026-10-15 - Logging-only GitHub Actions poller
+
+1. Added a standalone outbound-only poller under `fwmt-agent-integration` that reads the manifest, checks failed PR workflow runs, fetches each PR author, and logs only configured author matches.
+2. Added a separate SQLite deduplication file keyed by repository, run ID, attempt and PR, plus bounded lookback and pagination and a retrying interval for transient polling errors. This stage does not enqueue agent tasks.
+3. Added fake-GitHub tests, a minimal Python container image, and local/Podman/Docker setup with a read-only mounted token and persistent state mount. No live GitHub or container runtime validation was available at implementation time.
+
+## 2026-10-15 - Shared workspace manifest parsing
+
+1. Extracted manifest parsing and repository validation to `lib/common` for the workspace bootstrap and the logging-only poller; the poller applies a separate strict GitHub HTTPS URL check and excludes the documents repository.
+2. Updated the local commands and container images to include the shared module without changing bootstrap's Git preflight or the poller's Actions and PR requests. A successful Git remote check does not establish Actions API access.
+3. Local polling initially failed TLS verification using restricted system Python; a user-managed Conda Python has a CA bundle and a reported `--once` run exited successfully. Three Actions run endpoints previously returned 404 with the token; GitHub access/Actions settings remain a separate concern from manifest URL parsing. The poller README now documents Conda setup and both failure modes.

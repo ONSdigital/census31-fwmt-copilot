@@ -41,17 +41,17 @@ docker run --rm \
   uvicorn app:app --app-dir /app/api --host 0.0.0.0 --port 8000
 ```
 
-With the token file accessible locally, enqueue a task:
+With the token file accessible locally, enqueue a failed Cloud Build triage task:
 
 ```sh
 printf 'header = "Authorization: Bearer %s"\n' "$(cat /path/to/agent-api-token)" | \
   curl --fail-with-body --config - \
     -H 'Content-Type: application/json' \
-    --data '{"prompt":"Review the job-service change","idempotencyKey":"github:repo:run:1"}' \
+    --data '{"command":"triage-pr-build-failure","type":"github","payload":{"repository":"ONSdigital/census31-fwmt-common","prNumber":14,"prUrl":"https://github.com/ONSdigital/census31-fwmt-common/pull/14","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","checkRunId":116430236774,"runUrl":"https://console.cloud.google.com/cloud-build/builds/example","workflow":"common-build","source":"google-cloud-build","conclusion":"failure"},"idempotencyKey":"github:ONSdigital/census31-fwmt-common:pr:14:check:116430236774"}' \
     http://127.0.0.1:8000/agent-requests
 ```
 
-`POST /agent-requests` returns `201 Created` with `{"messageId": 1, "status": "pending"}`. The optional `idempotencyKey` is a nonblank string of at most 255 characters. Repeating a key with the same prompt returns `200 OK` with the original message ID and current status; using it for a different prompt returns `409 Conflict`. Without a key, every request creates a new task. Use a stable, namespaced identifier per event (for example provider, repository, workflow run ID, and attempt), including the attempt if a rerun should become a separate task. Prompts must be nonblank and at most 4096 characters. The API refuses to start without a readable token or accessible queue. Keep it on localhost or add TLS and access controls before allowing remote callers. Prompt text may be sensitive; protect the database and avoid logging request bodies. The endpoint only enqueues tasks.
+`POST /agent-requests` returns `201 Created` with `{"messageId": 1, "status": "pending"}`. It accepts a `command`, `type`, free-form JSON object `payload`, and required `idempotencyKey` (1–255 nonblank characters). The envelope and 64 KiB request size are enforced at ingress; the command processor validates the fields it needs and renders a prompt of at most 4096 characters. At present, only `triage-pr-build-failure` with type `github` and a failed Google Cloud Build check is supported. Unsupported commands or invalid event data return 422. Repeating a key with the same rendered prompt returns `200 OK` with the original message ID and current status; using it for a different prompt returns `409 Conflict`. Use a stable, namespaced identifier per check, including the check run ID so a new run becomes a separate task. The previous raw `prompt` request format is no longer accepted. The API refuses to start without a readable token or accessible queue. Keep it on localhost or add TLS and access controls before allowing remote callers. Prompt text may be sensitive; protect the database and avoid logging request bodies. The endpoint only enqueues tasks.
 
 For local testing from the project root, install `agent-workspace/api/requirements-test.txt`, set `AGENT_API_TOKEN_FILE` and `TASK_QUEUE_DB`, and run `uvicorn app:app --app-dir agent-workspace/api --host 127.0.0.1 --port 8000` with `PYTHONPATH=agent-workspace/task-queue`.
 

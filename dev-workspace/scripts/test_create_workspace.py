@@ -42,6 +42,7 @@ class CreateWorkspaceTests(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--workspace", str(workspace), "--config", str(config)],
             capture_output=True,
             text=True,
+            env=dict(os.environ, PYTHONPATH=str(SCRIPT.parents[2])),
         )
 
     def test_copies_config_and_checks_out_documents_and_repos(self):
@@ -135,7 +136,7 @@ class CreateWorkspaceTests(unittest.TestCase):
         config = self.root / "source.json"
         config.write_text(json.dumps({"documents": {}, "repos": []}))
         workspace = self.root / "workspace"
-        environment = dict(os.environ, PATH=str(self.root / "no-git"))
+        environment = dict(os.environ, PATH=str(self.root / "no-git"), PYTHONPATH=str(SCRIPT.parents[2]))
 
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--workspace", str(workspace), "--config", str(config)],
