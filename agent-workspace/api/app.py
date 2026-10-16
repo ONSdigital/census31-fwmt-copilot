@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from command_processor import render_command
+from command_processor import validate_command
 from task_queue import IdempotencyConflict, TaskQueue
 
 
@@ -75,15 +75,15 @@ def create_app():
         except ValidationError as error:
             raise HTTPException(status_code=422, detail="Invalid agent request") from error
         try:
-            prompt = render_command(agent_request.command, agent_request.type, agent_request.payload)
+            validate_command(agent_request.command, agent_request.type, agent_request.payload)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         try:
-            message_id, created, task_status = request.app.state.queue.enqueue_once(
-                prompt, agent_request.idempotencyKey
+            message_id, created, task_status = request.app.state.queue.enqueue_event(
+                agent_request.command, agent_request.type, agent_request.payload, agent_request.idempotencyKey
             )
         except IdempotencyConflict as error:
-            raise HTTPException(status_code=409, detail="Idempotency key already used for another prompt") from error
+            raise HTTPException(status_code=409, detail="Idempotency key already used for another event") from error
         except sqlite3.Error as error:
             raise HTTPException(status_code=503, detail="Task queue unavailable") from error
         if not created:

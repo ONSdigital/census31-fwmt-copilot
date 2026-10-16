@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persist and inspect a single-worker queue of agent task prompts."""
+"""Persist and inspect structured workflow events."""
 
 import argparse
 import json
@@ -10,20 +10,20 @@ from pathlib import Path
 
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS tasks (
+CREATE TABLE IF NOT EXISTS workflow_events (
     id INTEGER PRIMARY KEY,
-    prompt TEXT NOT NULL CHECK (length(trim(prompt)) > 0),
-    idempotency_key TEXT,
+    command TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'running', 'done', 'failed')),
+        CHECK (status IN ('pending', 'running', 'reported', 'unsupported', 'failed', 'pushed-awaiting-ci')),
+    report TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    started_at TEXT,
-    finished_at TEXT,
-    last_error TEXT
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS tasks_next ON tasks(status, id);
-CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_running ON tasks(status) WHERE status = 'running';
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_one_running
+    ON workflow_events(status) WHERE status = 'running';
 """
 
 
@@ -36,144 +36,129 @@ class TaskQueue:
         self.database = Path(database)
         with closing(self._connect()) as connection:
             connection.executescript(SCHEMA)
-            with connection:
-                columns = {column["name"] for column in connection.execute("PRAGMA table_info(tasks)")}
-                if "idempotency_key" not in columns:
-                    connection.execute("ALTER TABLE tasks ADD COLUMN idempotency_key TEXT")
-                connection.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_key "
-                    "ON tasks(idempotency_key) WHERE idempotency_key IS NOT NULL"
-                )
 
     def _connect(self):
         connection = sqlite3.connect(self.database, timeout=10)
         connection.row_factory = sqlite3.Row
         return connection
 
-    def enqueue(self, prompt, idempotency_key=None):
-        return self.enqueue_once(prompt, idempotency_key)[0]
+    @staticmethod
+    def _event(row):
+        if row is None:
+            return None
+        event = dict(row)
+        event["payload"] = json.loads(event["payload"])
+        event["report"] = json.loads(event["report"]) if event["report"] else None
+        return event
 
-    def enqueue_once(self, prompt, idempotency_key=None):
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("task prompt must not be blank")
-        if idempotency_key is not None and (
-            not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 255
-        ):
-            raise ValueError("idempotency key must be a nonblank string of at most 255 characters")
+    def enqueue_event(self, command, event_type, payload, idempotency_key):
+        if (not isinstance(command, str) or not command.strip()
+                or not isinstance(event_type, str) or not event_type.strip()
+                or not isinstance(payload, dict) or not isinstance(idempotency_key, str)
+                or not idempotency_key.strip() or len(idempotency_key) > 255):
+            raise ValueError("Invalid workflow event")
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         with closing(self._connect()) as connection:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                if idempotency_key is not None:
-                    existing = connection.execute(
-                        "SELECT id, prompt, status FROM tasks WHERE idempotency_key = ?", (idempotency_key,)
-                    ).fetchone()
-                    if existing is not None:
-                        if existing["prompt"] != prompt:
-                            raise IdempotencyConflict("idempotency key already belongs to a different prompt")
-                        return existing["id"], False, existing["status"]
+                existing = connection.execute(
+                    "SELECT * FROM workflow_events WHERE idempotency_key = ?", (idempotency_key,)
+                ).fetchone()
+                if existing is not None:
+                    if (existing["command"], existing["event_type"], existing["payload"]) != (
+                            command, event_type, serialized):
+                        raise IdempotencyConflict("Idempotency key already used for another event")
+                    return existing["id"], False, existing["status"]
                 cursor = connection.execute(
-                    "INSERT INTO tasks (prompt, idempotency_key) VALUES (?, ?)", (prompt, idempotency_key)
+                    "INSERT INTO workflow_events (command, event_type, payload, idempotency_key) "
+                    "VALUES (?, ?, ?, ?)", (command, event_type, serialized, idempotency_key),
                 )
                 return cursor.lastrowid, True, "pending"
 
-    def claim(self):
+    def claim_event(self):
         with closing(self._connect()) as connection:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                if connection.execute("SELECT 1 FROM tasks WHERE status = 'running' LIMIT 1").fetchone():
-                    raise ValueError("a task is already running; recover it after confirming the worker stopped")
-                task = connection.execute(
-                    "SELECT id FROM tasks WHERE status = 'pending' ORDER BY id LIMIT 1"
+                if connection.execute(
+                    "SELECT 1 FROM workflow_events WHERE status = 'running' LIMIT 1"
+                ).fetchone():
+                    raise ValueError("an event is already running; recover after confirming the worker stopped")
+                row = connection.execute(
+                    "SELECT * FROM workflow_events WHERE status = 'pending' ORDER BY id LIMIT 1"
                 ).fetchone()
-                if task is None:
+                if row is None:
                     return None
                 connection.execute(
-                    "UPDATE tasks SET status = 'running', attempts = attempts + 1, "
-                    "started_at = CURRENT_TIMESTAMP, finished_at = NULL, last_error = NULL WHERE id = ?",
-                    (task["id"],),
+                    "UPDATE workflow_events SET status = 'running', attempts = attempts + 1 WHERE id = ?",
+                    (row["id"],),
                 )
-                return dict(connection.execute("SELECT * FROM tasks WHERE id = ?", (task["id"],)).fetchone())
+                return self._event(connection.execute(
+                    "SELECT * FROM workflow_events WHERE id = ?", (row["id"],)
+                ).fetchone())
 
-    def _finish(self, task_id, status, error=None):
+    def finish_event(self, event_id, status, report):
+        if status not in ("reported", "unsupported", "failed", "pushed-awaiting-ci") or not isinstance(report, dict):
+            raise ValueError("Invalid event result")
         with closing(self._connect()) as connection:
             with connection:
                 cursor = connection.execute(
-                    "UPDATE tasks SET status = ?, finished_at = CURRENT_TIMESTAMP, last_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (status, error, task_id),
-                )
-                if cursor.rowcount != 1:
-                    raise ValueError("task is not running: {}".format(task_id))
-
-    def complete(self, task_id):
-        self._finish(task_id, "done")
-
-    def fail(self, task_id, error):
-        if not isinstance(error, str) or not error.strip():
-            raise ValueError("failure reason must not be blank")
-        self._finish(task_id, "failed", error)
-
-    def retry(self, task_id):
-        with closing(self._connect()) as connection:
-            with connection:
-                cursor = connection.execute(
-                    "UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, "
-                    "last_error = NULL WHERE id = ? AND status = 'failed'",
-                    (task_id,),
+                    "UPDATE workflow_events SET status = ?, report = ? WHERE id = ? AND status = 'running'",
+                    (status, json.dumps(report, sort_keys=True), event_id),
                 )
                 if cursor.rowcount != 1:
-                    raise ValueError("task is not failed: {}".format(task_id))
+                    raise ValueError("Event is not running")
 
-    def recover(self):
+    def recover_event(self):
         with closing(self._connect()) as connection:
             with connection:
                 cursor = connection.execute(
-                    "UPDATE tasks SET status = 'failed', finished_at = CURRENT_TIMESTAMP, "
-                    "last_error = 'Worker interrupted; review before retrying' WHERE status = 'running'"
+                    "UPDATE workflow_events SET status = 'failed', "
+                    "report = ? WHERE status = 'running'",
+                    (json.dumps({"reason": "Worker interrupted; inspect checkpoints and remote before retry"}),),
                 )
                 return cursor.rowcount
 
-    def list_tasks(self):
+    def retry_event(self, event_id):
         with closing(self._connect()) as connection:
-            return [dict(task) for task in connection.execute("SELECT * FROM tasks ORDER BY id")]
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE workflow_events SET status = 'pending', report = NULL "
+                    "WHERE id = ? AND status = 'failed'", (event_id,),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Event is not failed")
+
+    def get_event(self, event_id):
+        with closing(self._connect()) as connection:
+            return self._event(connection.execute(
+                "SELECT * FROM workflow_events WHERE id = ?", (event_id,)
+            ).fetchone())
+
+    def list_events(self):
+        with closing(self._connect()) as connection:
+            return [self._event(row) for row in connection.execute(
+                "SELECT * FROM workflow_events ORDER BY id"
+            )]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queue-db", type=Path, required=True, help="SQLite file on persistent storage")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("claim", help="claim the oldest pending task")
-    commands.add_parser("recover", help="mark an interrupted running task as failed")
-    commands.add_parser("list", help="list tasks as JSON")
-    enqueue = commands.add_parser("enqueue", help="append a task prompt")
-    enqueue.add_argument("prompt")
-    enqueue.add_argument("--idempotency-key")
-    for command in ("done", "retry"):
-        action = commands.add_parser(command)
-        action.add_argument("task_id", type=int)
-    fail = commands.add_parser("fail")
-    fail.add_argument("task_id", type=int)
-    fail.add_argument("reason")
+    commands.add_parser("list-events", help="list structured workflow events and reports")
+    commands.add_parser("recover-events", help="mark interrupted events failed for operator review")
+    retry_event = commands.add_parser("retry-event", help="retry a reviewed failed event")
+    retry_event.add_argument("event_id", type=int)
     args = parser.parse_args()
 
     try:
         queue = TaskQueue(args.queue_db)
-        if args.command == "enqueue":
-            print(queue.enqueue(args.prompt, args.idempotency_key))
-        elif args.command == "claim":
-            task = queue.claim()
-            if task is not None:
-                print(json.dumps(task))
-        elif args.command == "done":
-            queue.complete(args.task_id)
-        elif args.command == "fail":
-            queue.fail(args.task_id, args.reason)
-        elif args.command == "retry":
-            queue.retry(args.task_id)
-        elif args.command == "recover":
-            print(queue.recover())
-        elif args.command == "list":
-            print(json.dumps(queue.list_tasks()))
+        if args.command == "list-events":
+            print(json.dumps(queue.list_events()))
+        elif args.command == "recover-events":
+            print(queue.recover_event())
+        elif args.command == "retry-event":
+            queue.retry_event(args.event_id)
     except (OSError, ValueError, sqlite3.Error) as error:
         print("Task queue error: {}".format(error), file=sys.stderr)
         return 1

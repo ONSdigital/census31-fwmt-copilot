@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -42,7 +43,7 @@ class AgentRequestTests(unittest.TestCase):
             "idempotencyKey": "github:ONSdigital/census31-fwmt-common:pr:14:check:116430236774",
         }
 
-    def test_structured_cloud_build_request_creates_triage_prompt_and_deduplicates(self):
+    def test_structured_cloud_build_request_persists_event_and_deduplicates(self):
         event = self.event()
         event["payload"]["providerMetadata"] = {"extra": ["accepted", 42]}
         with TestClient(create_app()) as client:
@@ -50,8 +51,8 @@ class AgentRequestTests(unittest.TestCase):
             self.assertEqual(first.status_code, 201)
             task_id = first.json()["messageId"]
             queue = TaskQueue(self.database)
-            queue.claim()
-            queue.complete(task_id)
+            queue.claim_event()
+            queue.finish_event(task_id, "reported", {"reason": "test"})
             replay = client.post("/agent-requests", json=event, headers=self.headers)
             conflict = client.post(
                 "/agent-requests",
@@ -60,13 +61,13 @@ class AgentRequestTests(unittest.TestCase):
             )
         self.assertEqual(first.json(), {"messageId": task_id, "status": "pending"})
         self.assertEqual(replay.status_code, 200)
-        self.assertEqual(replay.json(), {"messageId": task_id, "status": "done"})
+        self.assertEqual(replay.json(), {"messageId": task_id, "status": "reported"})
         self.assertEqual(conflict.status_code, 409)
-        tasks = queue.list_tasks()
-        self.assertEqual(len(tasks), 1)
-        for value in (event["payload"]["prUrl"], event["payload"]["runUrl"], event["payload"]["headSha"]):
-            self.assertIn(value, tasks[0]["prompt"])
-        self.assertNotIn("providerMetadata", tasks[0]["prompt"])
+        self.assertEqual(queue.get_event(task_id)["payload"], event["payload"])
+        with sqlite3.connect(self.database) as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+            ).fetchone())
 
     def test_missing_and_wrong_credentials_cannot_enqueue(self):
         with TestClient(create_app()) as client:
@@ -75,7 +76,7 @@ class AgentRequestTests(unittest.TestCase):
                 response = client.post("/agent-requests", json=self.event(), headers=headers)
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.headers["www-authenticate"], "Bearer")
-        self.assertEqual(TaskQueue(self.database).list_tasks(), [])
+        self.assertEqual(TaskQueue(self.database).list_events(), [])
 
     def test_rejects_bad_command_payload_and_body_size(self):
         event = self.event()
@@ -93,7 +94,15 @@ class AgentRequestTests(unittest.TestCase):
             for key in ("", " ", "x" * 256):
                 self.assertEqual(client.post("/agent-requests", json={**event, "idempotencyKey": key},
                                              headers=self.headers).status_code, 422)
-        self.assertEqual(TaskQueue(self.database).list_tasks(), [])
+        self.assertEqual(TaskQueue(self.database).list_events(), [])
+
+    def test_unknown_provider_is_accepted_for_workflow_to_report_unsupported(self):
+        event = self.event()
+        event["payload"] = {"source": "other-ci", "prNumber": 14}
+        with TestClient(create_app()) as client:
+            response = client.post("/agent-requests", json=event, headers=self.headers)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(TaskQueue(self.database).get_event(response.json()["messageId"])["payload"], event["payload"])
 
     def test_refuses_to_start_without_readable_nonempty_secret(self):
         for token_file in ("", str(self.root / "missing-token")):
