@@ -97,3 +97,9 @@
 1. Removed free-form prompt-task persistence, queue CLI commands, and the legacy prompt worker; the worker now processes structured workflow events by default.
 2. New queue databases contain only `workflow_events`. Existing `tasks` tables and their data are left untouched; operators must back up and explicitly remove obsolete data if desired.
 3. Removed the Copilot prompt runner integration and updated worker, queue, API, and container documentation for event-only processing.
+
+### Post-change audit
+
+Reviewed the event-only queue schema and CLI, worker dispatch and failure handling, API integration, repair adapter, tests, Dockerfile, and operational documentation against commit `cd43fb0`. New databases do not create a prompt table; pre-existing prompt rows are not deleted or executed. The event worker still claims one event at a time, persists terminal reports, and requires explicit recovery after interruption. The queue, worker, API, and workflow test suites passed (8, 6, 6, and 58 tests respectively); no blocking code regression was found in this scope.
+
+One documentation issue was corrected: the Copilot image's event-worker example implied it could run a repair, but that image does not include the required `gh`, `gcloud`, and Maven tools. The documentation now directs operators to a provisioned runtime. This was a source and local-test audit, not a live container or PR repair exercise.

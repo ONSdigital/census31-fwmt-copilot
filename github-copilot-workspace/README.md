@@ -44,25 +44,9 @@ The inherited SQLite event queue, event worker, and FastAPI ingress are document
 
 ## Process structured events
 
-Start this container separately from the API, using the same writable `/work` mount. The event worker does not invoke Copilot CLI; it needs GitHub and Cloud Build credentials, plus the CI tools described in the [agent workspace README](../agent-workspace/README.md).
+Start the worker separately from the API, sharing its persistent queue database. The worker does not invoke Copilot CLI, and this image does not include `gh`, `gcloud`, or Maven. Use a provisioned host or a dedicated image with those tools and their runtime credentials; follow the [event-worker command and prerequisites](../agent-workspace/README.md#queue-worker) instead of running this image as an event worker.
 
-```sh
-docker run --rm \
-  --mount type=bind,src=/path/to/writable-parent,dst=/work \
-  --mount type=bind,src=/path/to/created-fwmt-workspace,dst=/work/fwmt \
-  --mount type=bind,src=/path/to/triage-worktrees,dst=/work/triage-worktrees \
-  --mount type=bind,src=/path/to/git-token-file,dst=/run/secrets/git_token,readonly \
-  -e GITHUB_TOKEN_FILE=/run/secrets/git_token \
-  dev-workspace:copilot \
-  python3 /app/worker/worker.py \
-    --queue-db /work/task-queue.sqlite3 \
-    --checkpoints /work/workflow-checkpoints.sqlite3 \
-    --workspace /work/fwmt \
-    --worktree-root /work/triage-worktrees \
-    --until-empty
-```
-
-The queue, checkpoint database, and worktree directory must persist across restarts. The workflow will not wait for empty check suites, repair other failure types, or push on incomplete evidence. Inspect results with `python3 /app/task-queue/task_queue.py --queue-db /work/task-queue.sqlite3 list-events`. For a stopped worker with an interrupted event, run `recover-events` and review the remote and worktree before `retry-event ID`; the workflow must reconcile external side effects before resuming.
+The queue, checkpoint database, and worktree directory must persist across restarts. The workflow will not wait for empty check suites, repair other failure types, or push on incomplete evidence. On a provisioned host, inspect results from the project root with `python3 agent-workspace/task-queue/task_queue.py --queue-db /path/to/state/task-queue.sqlite3 list-events` (or use `/app/task-queue/task_queue.py` and `/work/task-queue.sqlite3` in a provisioned container). For a stopped worker with an interrupted event, run `recover-events` and review the remote and worktree before `retry-event ID`; the workflow must reconcile external side effects before resuming.
 
 ## Copilot token alternative
 
