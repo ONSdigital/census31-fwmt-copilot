@@ -1,8 +1,5 @@
 FROM agent-workspace:base
 
-COPY --chmod=755 github-copilot-workspace/copilot_runner.py /usr/local/bin/copilot-runner
-ENV AGENT_RUNNER=/usr/local/bin/copilot-runner
-
 RUN microdnf install -y curl tar gzip coreutils \
     && microdnf clean all
 

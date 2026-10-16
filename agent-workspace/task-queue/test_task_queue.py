@@ -20,140 +20,29 @@ class TaskQueueTests(unittest.TestCase):
     def setUp(self):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
-        self.database = Path(temporary_directory.name) / "tasks.sqlite3"
+        self.database = Path(temporary_directory.name) / "events.sqlite3"
         self.queue = TaskQueue(self.database)
 
-    def test_claims_in_order_and_persists_completion(self):
-        first_id = self.queue.enqueue("First task")
-        second_id = self.queue.enqueue("Second task")
+    def test_new_database_contains_only_structured_event_table(self):
+        with sqlite3.connect(self.database) as connection:
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )}
+        self.assertIn("workflow_events", tables)
+        self.assertNotIn("tasks", tables)
 
-        first = self.queue.claim()
-        self.assertEqual((first["id"], first["prompt"], first["attempts"]), (first_id, "First task", 1))
-        with self.assertRaises(ValueError):
-            TaskQueue(self.database).claim()
-
-        self.queue.complete(first_id)
-        second = TaskQueue(self.database).claim()
-        self.assertEqual(second["id"], second_id)
-        self.queue.complete(second_id)
-        self.assertIsNone(self.queue.claim())
-        self.assertEqual([task["status"] for task in TaskQueue(self.database).list_tasks()], ["done", "done"])
-
-    def test_failure_requires_explicit_retry(self):
-        task_id = self.queue.enqueue("Retry this")
-        self.queue.claim()
-        self.queue.fail(task_id, "Agent exited with status 1")
-
-        self.assertIsNone(self.queue.claim())
-        self.assertEqual(self.queue.list_tasks()[0]["last_error"], "Agent exited with status 1")
-        self.queue.retry(task_id)
-        retried = self.queue.claim()
-        self.assertEqual((retried["id"], retried["attempts"]), (task_id, 2))
-
-    def test_recover_marks_interrupted_task_failed(self):
-        task_id = self.queue.enqueue("Possibly pushed changes")
-        self.queue.claim()
-
-        self.assertEqual(TaskQueue(self.database).recover(), 1)
-        self.assertEqual(self.queue.list_tasks()[0]["status"], "failed")
-        self.assertIn("interrupted", self.queue.list_tasks()[0]["last_error"])
-        self.assertIsNone(self.queue.claim())
-        with self.assertRaises(ValueError):
-            self.queue.complete(task_id)
-
-    def test_rejects_blank_tasks_and_invalid_transitions(self):
-        with self.assertRaises(ValueError):
-            self.queue.enqueue("  ")
-        task_id = self.queue.enqueue("Valid")
-        with self.assertRaises(ValueError):
-            self.queue.complete(task_id)
-        with self.assertRaises(ValueError):
-            self.queue.retry(task_id)
-        with self.assertRaises(ValueError):
-            self.queue.fail(task_id, "Not running")
-
-    def test_cli_round_trip(self):
-        def run(*arguments):
-            return subprocess.run(
-                [sys.executable, str(SCRIPT), "--queue-db", str(self.database), *arguments],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-
-        task_id = int(run("enqueue", "From the command line"))
-        self.assertEqual(json.loads(run("claim"))["id"], task_id)
-        run("fail", str(task_id), "Needs review")
-        self.assertEqual(json.loads(run("list"))[0]["status"], "failed")
-        run("retry", str(task_id))
-        self.assertEqual(json.loads(run("claim"))["attempts"], 2)
-        run("done", str(task_id))
-        self.assertEqual(run("claim"), "")
-        keyed_id = int(run("enqueue", "From a webhook", "--idempotency-key", "github:repo:run:4"))
-        self.assertEqual(int(run("enqueue", "From a webhook", "--idempotency-key", "github:repo:run:4")), keyed_id)
-
-    def test_idempotent_enqueue_preserves_original_status_and_rejects_conflicts(self):
-        task_id, created, status = self.queue.enqueue_once("Review PR", "github:repo:run:1")
-        self.assertEqual((created, status), (True, "pending"))
-        self.queue.claim()
-        self.queue.complete(task_id)
-
-        self.assertEqual(self.queue.enqueue_once("Review PR", "github:repo:run:1"), (task_id, False, "done"))
-        with self.assertRaises(IdempotencyConflict):
-            self.queue.enqueue_once("Different PR", "github:repo:run:1")
-        self.assertEqual(len(self.queue.list_tasks()), 1)
-        self.assertNotEqual(self.queue.enqueue("Unkeyed"), self.queue.enqueue("Unkeyed"))
-
-    def test_concurrent_duplicate_submissions_create_one_task(self):
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            results = list(pool.map(
-                lambda _: self.queue.enqueue_once("Review PR", "github:repo:run:2"), range(12),
-            ))
-
-        self.assertEqual(len({result[0] for result in results}), 1)
-        self.assertEqual(sum(created for _, created, _ in results), 1)
-        self.assertEqual(len(self.queue.list_tasks()), 1)
-
-    def test_migrates_existing_database_without_losing_tasks(self):
+    def test_existing_prompt_table_is_left_untouched(self):
         legacy = self.database.parent / "legacy.sqlite3"
         with sqlite3.connect(legacy) as connection:
             connection.execute(
-                "CREATE TABLE tasks (id INTEGER PRIMARY KEY, prompt TEXT NOT NULL, "
-                "status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, "
-                "created_at TEXT, started_at TEXT, finished_at TEXT, last_error TEXT)"
+                "CREATE TABLE tasks (id INTEGER PRIMARY KEY, prompt TEXT NOT NULL)"
             )
-            connection.execute("INSERT INTO tasks (prompt, status) VALUES ('Existing task', 'pending')")
+            connection.execute("INSERT INTO tasks (prompt) VALUES ('Existing prompt')")
 
-        migrated = TaskQueue(legacy)
-        self.assertEqual(migrated.list_tasks()[0]["prompt"], "Existing task")
-        self.assertIsNone(migrated.list_tasks()[0]["idempotency_key"])
-        self.assertEqual(migrated.enqueue_once("New task", "github:repo:run:3")[1], True)
-        self.assertEqual(TaskQueue(legacy).enqueue_once("New task", "github:repo:run:3")[1], False)
+        TaskQueue(legacy)
 
-    def test_rejects_invalid_idempotency_keys(self):
-        for key in ("", "  ", "x" * 256, 123):
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                self.queue.enqueue_once("Review PR", key)
-        self.assertEqual(self.queue.list_tasks(), [])
-
-    def test_cli_commands_and_idempotency_errors(self):
-        def run(*arguments):
-            with patch.object(sys, "argv", [str(SCRIPT), "--queue-db", str(self.database), *arguments]):
-                with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as error:
-                    exit_code = main()
-            return exit_code, output.getvalue().strip(), error.getvalue()
-
-        key = "github:repo:run:5"
-        task_id = int(run("enqueue", "Review PR", "--idempotency-key", key)[1])
-        self.assertEqual(int(run("enqueue", "Review PR", "--idempotency-key", key)[1]), task_id)
-        self.assertEqual(json.loads(run("claim")[1])["id"], task_id)
-        self.assertEqual(run("fail", str(task_id), "Needs review")[0], 0)
-        self.assertEqual(json.loads(run("list")[1])[0]["status"], "failed")
-        self.assertEqual(run("retry", str(task_id))[0], 0)
-        self.assertEqual(json.loads(run("claim")[1])["attempts"], 2)
-        self.assertEqual(run("done", str(task_id))[0], 0)
-        self.assertEqual(run("recover")[1], "0")
-        self.assertEqual(run("claim")[1], "")
-        self.assertEqual(run("enqueue", "Different PR", "--idempotency-key", key)[0], 1)
-        self.assertIn("Task queue error", run("enqueue", "  ")[2])
+        with sqlite3.connect(legacy) as connection:
+            self.assertEqual(connection.execute("SELECT prompt FROM tasks").fetchall(), [("Existing prompt",)])
 
     def test_event_persists_payload_deduplicates_and_reports_terminal_result(self):
         payload = {"repository": "ONSdigital/common", "prNumber": 14, "headSha": "a" * 40}
@@ -171,17 +60,64 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(TaskQueue(self.database).get_event(first[0])["report"]["reason"], "other checks failed")
         self.assertIsNone(self.queue.claim_event())
 
-    def test_events_do_not_run_legacy_prompts_and_interrupted_events_require_review(self):
-        self.queue.enqueue("Existing prompt")
-        event_id = self.queue.enqueue_event("triage-pr-build-failure", "github", {"source": "other"}, "key")[0]
+    def test_interrupted_event_requires_review_before_retry(self):
+        event_id = self.queue.enqueue_event(
+            "triage-pr-build-failure", "github", {"source": "other"}, "key"
+        )[0]
         self.assertEqual(self.queue.claim_event()["id"], event_id)
         with self.assertRaises(ValueError):
             TaskQueue(self.database).claim_event()
         self.assertEqual(TaskQueue(self.database).recover_event(), 1)
         self.assertEqual(TaskQueue(self.database).get_event(event_id)["status"], "failed")
-        self.assertEqual(self.queue.list_tasks()[0]["prompt"], "Existing prompt")
         TaskQueue(self.database).retry_event(event_id)
         self.assertEqual(TaskQueue(self.database).claim_event()["attempts"], 2)
+
+    def test_concurrent_duplicate_events_create_one_event(self):
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(
+                lambda _: self.queue.enqueue_event(
+                    "triage-pr-build-failure", "github", {"checkRunId": 101}, "github:check:101"
+                ),
+                range(12),
+            ))
+        self.assertEqual(len({result[0] for result in results}), 1)
+        self.assertEqual(sum(created for _, created, _ in results), 1)
+        self.assertEqual(len(self.queue.list_events()), 1)
+
+    def test_event_cli_commands(self):
+        def run(*arguments):
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), "--queue-db", str(self.database), *arguments],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        event_id = self.queue.enqueue_event(
+            "triage-pr-build-failure", "github", {"source": "other"}, "github:check:102"
+        )[0]
+        self.assertEqual(json.loads(run("list-events"))[0]["id"], event_id)
+        self.assertEqual(run("recover-events"), "0")
+        self.queue.claim_event()
+        self.assertEqual(run("recover-events"), "1")
+        run("retry-event", str(event_id))
+        self.assertEqual(json.loads(run("list-events"))[0]["status"], "pending")
+
+    def test_prompt_queue_cli_commands_are_removed(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--queue-db", str(self.database), "enqueue", "Old prompt"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("Old prompt", result.stdout)
+
+    def test_cli_reports_invalid_event_action(self):
+        def run(*arguments):
+            with patch.object(sys, "argv", [str(SCRIPT), "--queue-db", str(self.database), *arguments]):
+                with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as error:
+                    exit_code = main()
+            return exit_code, output.getvalue(), error.getvalue()
+
+        self.assertEqual(run("retry-event", "999")[0], 1)
+        self.assertIn("Task queue error", run("retry-event", "999")[2])
 
 
 if __name__ == "__main__":

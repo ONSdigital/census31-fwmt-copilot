@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -62,8 +63,11 @@ class AgentRequestTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200)
         self.assertEqual(replay.json(), {"messageId": task_id, "status": "reported"})
         self.assertEqual(conflict.status_code, 409)
-        self.assertEqual(queue.list_tasks(), [])
         self.assertEqual(queue.get_event(task_id)["payload"], event["payload"])
+        with sqlite3.connect(self.database) as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+            ).fetchone())
 
     def test_missing_and_wrong_credentials_cannot_enqueue(self):
         with TestClient(create_app()) as client:
@@ -72,7 +76,6 @@ class AgentRequestTests(unittest.TestCase):
                 response = client.post("/agent-requests", json=self.event(), headers=headers)
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.headers["www-authenticate"], "Bearer")
-        self.assertEqual(TaskQueue(self.database).list_tasks(), [])
         self.assertEqual(TaskQueue(self.database).list_events(), [])
 
     def test_rejects_bad_command_payload_and_body_size(self):

@@ -51,7 +51,7 @@ class RepairAdapterTests(unittest.TestCase):
         self.run_git("remote", "add", "origin", "https://github.com/test/repair.git",
                      cwd=self.source)
         self.head = self.run_git("rev-parse", "HEAD", cwd=self.source).stdout.strip()
-        self.adapter = RepairAdapter(self.source, self.worktrees, self.source / "unused-runner.py")
+        self.adapter = RepairAdapter(self.source, self.worktrees)
         self.payload = {"headSha": self.head, "headRef": "feature",
                         "headRepository": "test/repair"}
         self.evidence = {"command": ["./mvnw", "-B", "spotless:check"],
@@ -267,7 +267,7 @@ class RepairAdapterTests(unittest.TestCase):
         self.assertFalse(self.worktrees.exists())
 
     def test_runner_is_optional_for_deterministic_spotless_repair(self):
-        adapter = RepairAdapter(self.source, self.worktrees, None)
+        adapter = RepairAdapter(self.source, self.worktrees)
         result = adapter.reproduce_and_fix(64, self.payload, self.evidence)
         self.assertTrue(result["validated"], result.get("reason"))
 
@@ -442,7 +442,7 @@ class RepairAdapterTests(unittest.TestCase):
                        "ref": "feature"}],
             "workspace_root": ".",
         }))
-        adapter = RepairAdapter(root, self.worktrees, self.source / "unused-runner.py")
+        adapter = RepairAdapter(root, self.worktrees)
         evidence = {**self.evidence, "head_repo": "test/repair",
                     "head_ref": "feature", "head_sha": self.head}
         result = adapter.reproduce_and_fix(99, {"headSha": self.head}, evidence)
@@ -452,7 +452,7 @@ class RepairAdapterTests(unittest.TestCase):
         # Real checkout at the manifest name; source checkout branch remains unchanged.
         self.source.rename(root / "sample")
         self.source = root / "sample"
-        adapter = RepairAdapter(root, self.worktrees, self.source / "unused-runner.py")
+        adapter = RepairAdapter(root, self.worktrees)
         result = adapter.reproduce_and_fix(99, {"headSha": self.head}, evidence)
         self.assertTrue(result["validated"], result.get("reason"))
         self.assertEqual(self.run_git("symbolic-ref", "--short", "HEAD",
@@ -465,7 +465,7 @@ class RepairAdapterTests(unittest.TestCase):
             "repos": [{"name": "sample", "url": "https://github.com/test/repair.git",
                        "ref": "feature"}],
         }))
-        adapter = RepairAdapter(root, self.worktrees, self.source / "unused-runner.py")
+        adapter = RepairAdapter(root, self.worktrees)
         evidence = {**self.evidence, "head_repo": "someone/fork",
                     "head_ref": "feature", "head_sha": self.head}
         result = adapter.reproduce_and_fix(99, {"headSha": self.head}, evidence)

@@ -22,17 +22,11 @@ _PUSH_MARKER = ".repair-push-attempt"
 
 
 class RepairAdapter:
-    """Run deterministic Maven formatting only; never grant a general-purpose shell.
+    """Run deterministic Maven formatting only; never grant a general-purpose shell."""
 
-    ``runner_path`` is reserved for a future explicitly sandboxed Copilot runner;
-    this adapter deliberately does not execute it. The proven Spotless formatter is
-    the sole editor.
-    """
-
-    def __init__(self, workspace_root, worktree_root, runner_path):
+    def __init__(self, workspace_root, worktree_root):
         self.workspace_root = Path(workspace_root).resolve()
         self.worktree_root = Path(worktree_root).resolve()
-        self.runner_path = Path(runner_path) if runner_path is not None else None
         if not self.workspace_root.is_dir():
             raise ValueError("workspace root must be an existing directory")
         if (self.worktree_root == self.workspace_root
